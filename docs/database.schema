@@ -1,0 +1,455 @@
+# Database Schema — Taymaz Market
+
+> **نسخه:** 1.0  
+> **تاریخ:** ۱۴۰۵/۰۳/۱۴  
+> **ORM:** Prisma 7.2.0  
+> **Database:** MySQL 8.x  
+> **مرجع:** [project-prd.md](./project-prd.md)
+
+---
+
+## خلاصه
+
+این سند اسکیمای کامل دیتابیس پلتفرم تبدیل ارز (ربات تلگرام + پنل مدیریت) را تعریف می‌کند.
+
+| اصل | توضیح |
+|-----|--------|
+| کلیدهای اصلی | `BIGINT UNSIGNED` با `autoincrement()` |
+| کلیدهای خارجی | `BIGINT UNSIGNED` |
+| نام جداول | snake_case (با `@@map`) |
+| نام ستون‌ها | snake_case (با `@map`) |
+| نام فیلدها در Prisma | camelCase |
+| Soft delete | فقط برای `users` و `admins` |
+| کشور ارز | FK به جدول `countries` (نه رشتهٔ جدا) |
+
+---
+
+## نمودار ER
+
+```mermaid
+erDiagram
+    countries ||--o{ currencies : "has"
+    users ||--o{ user_bank_accounts : "owns"
+    currencies ||--o{ user_bank_accounts : "target"
+    users ||--o{ exchange_requests : "submits"
+    currencies ||--o{ exchange_requests : "source"
+    currencies ||--o{ exchange_requests : "target"
+    admins ||--o{ exchange_requests : "reviews"
+
+    countries {
+        bigint_unsigned id PK
+        char code UK
+        varchar name_fa
+        varchar name_en
+        varchar phone_prefix
+    }
+
+    admins {
+        bigint_unsigned id PK
+        varchar name
+        varchar mobile UK
+        varchar password_hash
+        datetime deleted_at
+    }
+
+    users {
+        bigint_unsigned id PK
+        varchar name
+        bigint_unsigned telegram_chat_id
+        varchar telegram_username
+        varchar mobile UK
+        varchar verification_code
+        text notes
+        datetime deleted_at
+    }
+
+    currencies {
+        bigint_unsigned id PK
+        varchar title
+        varchar slug UK
+        bigint_unsigned country_id FK
+        boolean is_active
+        int sort_order
+    }
+
+    user_bank_accounts {
+        bigint_unsigned id PK
+        bigint_unsigned user_id FK
+        bigint_unsigned currency_id FK
+        varchar account_number
+        varchar label
+    }
+
+    exchange_requests {
+        bigint_unsigned id PK
+        varchar tracking_code UK
+        bigint_unsigned user_id FK
+        bigint_unsigned source_currency_id FK
+        bigint_unsigned target_currency_id FK
+        decimal amount
+        varchar bank_account
+        varchar invoice_image_url
+        enum status
+        text rejection_reason
+        bigint_unsigned reviewed_by_id FK
+        datetime reviewed_at
+    }
+
+    system_logs {
+        bigint_unsigned id PK
+        enum actor_type
+        bigint_unsigned actor_id
+        varchar action
+        varchar entity_type
+        bigint_unsigned entity_id
+        json metadata
+    }
+```
+
+---
+
+## جداول
+
+### `countries` — مرجع کشورها
+
+| ستون | نوع MySQL | توضیح |
+|------|-----------|--------|
+| `id` | BIGINT UNSIGNED | PK |
+| `code` | CHAR(2) | کد ISO 3166-1 alpha-2 — یکتا (مثلاً `IR`) |
+| `name_fa` | VARCHAR(100) | نام فارسی |
+| `name_en` | VARCHAR(100) | نام انگلیسی |
+| `phone_prefix` | VARCHAR(5) | پیش‌شماره بدون `+` (مثلاً `98`) |
+| `created_at` | DATETIME(3) | |
+| `updated_at` | DATETIME(3) | |
+
+### `admins` — مدیران پنل
+
+| ستون | نوع MySQL | توضیح |
+|------|-----------|--------|
+| `id` | BIGINT UNSIGNED | PK |
+| `name` | VARCHAR(100) | نام نمایشی |
+| `mobile` | VARCHAR(20) | موبایل با کد کشور — یکتا |
+| `password_hash` | VARCHAR(255) | bcrypt / argon2 |
+| `deleted_at` | DATETIME(3) | soft delete |
+| `created_at` | DATETIME(3) | |
+| `updated_at` | DATETIME(3) | |
+
+### `users` — مشتریان ربات تلگرام
+
+| ستون | نوع MySQL | توضیح |
+|------|-----------|--------|
+| `id` | BIGINT UNSIGNED | PK |
+| `name` | VARCHAR(100) | nullable — از تلگرام یا مدیر |
+| `telegram_chat_id` | BIGINT UNSIGNED | nullable — پس از `/start` |
+| `telegram_username` | VARCHAR(64) | nullable — بدون `@` |
+| `mobile` | VARCHAR(20) | یکتا — فرمت `989125553344` |
+| `profile_image_url` | VARCHAR(500) | nullable |
+| `verification_code` | VARCHAR(64) | nullable — `NULL` = غیرفعال |
+| `notes` | TEXT | nullable — توضیحات مدیر |
+| `deleted_at` | DATETIME(3) | soft delete |
+| `created_at` | DATETIME(3) | |
+| `updated_at` | DATETIME(3) | |
+
+**دسته‌بندی پنل:** فعال = `verification_code IS NOT NULL` · غیرفعال = `verification_code IS NULL`
+
+### `currencies` — ارزها
+
+| ستون | نوع MySQL | توضیح |
+|------|-----------|--------|
+| `id` | BIGINT UNSIGNED | PK |
+| `title` | VARCHAR(100) | مثلاً «ریال» |
+| `slug` | VARCHAR(50) | یکتا — latin (مثلاً `rials`) |
+| `country_id` | BIGINT UNSIGNED | FK → `countries.id` |
+| `is_active` | BOOLEAN | فقط فعال در ربات |
+| `sort_order` | INT UNSIGNED | nullable — ترتیب نمایش |
+| `created_at` | DATETIME(3) | |
+| `updated_at` | DATETIME(3) | |
+
+### `user_bank_accounts` — حساب‌های ذخیره‌شده (بر اساس ارز مقصد)
+
+| ستون | نوع MySQL | توضیح |
+|------|-----------|--------|
+| `id` | BIGINT UNSIGNED | PK |
+| `user_id` | BIGINT UNSIGNED | FK → `users.id` |
+| `currency_id` | BIGINT UNSIGNED | FK → `currencies.id` (ارز **مقصد**) |
+| `account_number` | VARCHAR(64) | کارت / شبا / حساب — نرمال‌شده |
+| `label` | VARCHAR(100) | nullable — مثلاً «کارت اصلی» |
+| `created_at` | DATETIME(3) | |
+
+**Unique:** `(user_id, currency_id, account_number)` — جلوگیری از تکرار
+
+### `exchange_requests` — درخواست‌های تبدیل
+
+| ستون | نوع MySQL | توضیح |
+|------|-----------|--------|
+| `id` | BIGINT UNSIGNED | PK |
+| `tracking_code` | VARCHAR(8) | یکتا — ۸ رقم عددی |
+| `user_id` | BIGINT UNSIGNED | FK → `users.id` |
+| `source_currency_id` | BIGINT UNSIGNED | FK → `currencies.id` |
+| `target_currency_id` | BIGINT UNSIGNED | FK → `currencies.id` |
+| `amount` | DECIMAL(20,4) | مبلغ — عدد مثبت |
+| `bank_account` | VARCHAR(64) | شماره نهایی تأییدشده |
+| `invoice_image_url` | VARCHAR(500) | URL فاکتور/فیش |
+| `status` | ENUM | `pending` · `approved` · `rejected` |
+| `rejection_reason` | TEXT | nullable — اجباری هنگام رد |
+| `reviewed_by_id` | BIGINT UNSIGNED | nullable — FK → `admins.id` |
+| `reviewed_at` | DATETIME(3) | nullable |
+| `created_at` | DATETIME(3) | |
+| `updated_at` | DATETIME(3) | |
+
+### `system_logs` — لاگ سیستم
+
+| ستون | نوع MySQL | توضیح |
+|------|-----------|--------|
+| `id` | BIGINT UNSIGNED | PK |
+| `actor_type` | ENUM | `admin` · `user` · `system` |
+| `actor_id` | BIGINT UNSIGNED | nullable — شناسه مدیر/کاربر (بدون FK — polymorphic) |
+| `action` | VARCHAR(100) | مثلاً `user.create`, `request.approve` |
+| `entity_type` | VARCHAR(50) | مثلاً `User`, `ExchangeRequest` |
+| `entity_id` | BIGINT UNSIGNED | nullable — شناسه موجودیت |
+| `metadata` | JSON | nullable — IP، payload خلاصه |
+| `created_at` | DATETIME(3) | |
+
+---
+
+## Prisma Schema
+
+> فایل نهایی برای `prisma/schema.prisma` — پس از تأیید، این بلوک را کپی کنید.
+
+```prisma
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum ExchangeRequestStatus {
+  pending
+  approved
+  rejected
+
+  @@map("exchange_request_status")
+}
+
+enum LogActorType {
+  admin
+  user
+  system
+
+  @@map("log_actor_type")
+}
+
+// ─── Reference ───────────────────────────────────────────────────────────────
+
+model Country {
+  id          BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  code        String   @unique @db.Char(2)
+  nameFa      String   @map("name_fa") @db.VarChar(100)
+  nameEn      String   @map("name_en") @db.VarChar(100)
+  phonePrefix String   @map("phone_prefix") @db.VarChar(5)
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  currencies Currency[]
+
+  @@map("countries")
+}
+
+// ─── Admins ──────────────────────────────────────────────────────────────────
+
+model Admin {
+  id           BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  name         String    @db.VarChar(100)
+  mobile       String    @unique @db.VarChar(20)
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  reviewedRequests ExchangeRequest[]
+
+  @@index([deletedAt])
+  @@map("admins")
+}
+
+// ─── Users (Telegram customers) ──────────────────────────────────────────────
+
+model User {
+  id                BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  name              String?   @db.VarChar(100)
+  telegramChatId    BigInt?   @unique @map("telegram_chat_id") @db.UnsignedBigInt
+  telegramUsername  String?   @map("telegram_username") @db.VarChar(64)
+  mobile            String    @unique @db.VarChar(20)
+  profileImageUrl   String?   @map("profile_image_url") @db.VarChar(500)
+  verificationCode  String?   @map("verification_code") @db.VarChar(64)
+  notes             String?   @db.Text
+  deletedAt         DateTime? @map("deleted_at") @db.DateTime(3)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  bankAccounts     UserBankAccount[]
+  exchangeRequests ExchangeRequest[]
+
+  @@index([verificationCode])
+  @@index([deletedAt])
+  @@index([createdAt])
+  @@map("users")
+}
+
+// ─── Currencies ──────────────────────────────────────────────────────────────
+
+model Currency {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  title     String   @db.VarChar(100)
+  slug      String   @unique @db.VarChar(50)
+  countryId BigInt   @map("country_id") @db.UnsignedBigInt
+  isActive  Boolean  @default(true) @map("is_active")
+  sortOrder Int?     @map("sort_order") @db.UnsignedInt
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  country Country @relation(fields: [countryId], references: [id], onDelete: Restrict)
+
+  bankAccounts           UserBankAccount[]
+  sourceExchangeRequests ExchangeRequest[] @relation("ExchangeRequestSource")
+  targetExchangeRequests ExchangeRequest[] @relation("ExchangeRequestTarget")
+
+  @@index([countryId])
+  @@index([isActive, sortOrder])
+  @@map("currencies")
+}
+
+// ─── User Bank Accounts ──────────────────────────────────────────────────────
+
+model UserBankAccount {
+  id            BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  userId        BigInt   @map("user_id") @db.UnsignedBigInt
+  currencyId    BigInt   @map("currency_id") @db.UnsignedBigInt
+  accountNumber String   @map("account_number") @db.VarChar(64)
+  label         String?  @db.VarChar(100)
+  createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  currency Currency @relation(fields: [currencyId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, currencyId, accountNumber])
+  @@index([userId, currencyId])
+  @@map("user_bank_accounts")
+}
+
+// ─── Exchange Requests ───────────────────────────────────────────────────────
+
+model ExchangeRequest {
+  id               BigInt                @id @default(autoincrement()) @db.UnsignedBigInt
+  trackingCode     String                @unique @map("tracking_code") @db.VarChar(8)
+  userId           BigInt                @map("user_id") @db.UnsignedBigInt
+  sourceCurrencyId BigInt                @map("source_currency_id") @db.UnsignedBigInt
+  targetCurrencyId BigInt                @map("target_currency_id") @db.UnsignedBigInt
+  amount           Decimal               @db.Decimal(20, 4)
+  bankAccount      String                @map("bank_account") @db.VarChar(64)
+  invoiceImageUrl  String                @map("invoice_image_url") @db.VarChar(500)
+  status           ExchangeRequestStatus @default(pending)
+  rejectionReason  String?               @map("rejection_reason") @db.Text
+  reviewedById     BigInt?               @map("reviewed_by_id") @db.UnsignedBigInt
+  reviewedAt       DateTime?             @map("reviewed_at") @db.DateTime(3)
+  createdAt        DateTime              @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.DateTime(3)
+
+  user           User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  sourceCurrency Currency @relation("ExchangeRequestSource", fields: [sourceCurrencyId], references: [id], onDelete: Restrict)
+  targetCurrency Currency @relation("ExchangeRequestTarget", fields: [targetCurrencyId], references: [id], onDelete: Restrict)
+  reviewedBy     Admin?   @relation(fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([status])
+  @@index([status, createdAt])
+  @@index([sourceCurrencyId])
+  @@index([targetCurrencyId])
+  @@index([reviewedById])
+  @@index([createdAt])
+  @@map("exchange_requests")
+}
+
+// ─── System Logs ─────────────────────────────────────────────────────────────
+
+model SystemLog {
+  id         BigInt       @id @default(autoincrement()) @db.UnsignedBigInt
+  actorType  LogActorType @map("actor_type")
+  actorId    BigInt?      @map("actor_id") @db.UnsignedBigInt
+  action     String       @db.VarChar(100)
+  entityType String       @map("entity_type") @db.VarChar(50)
+  entityId   BigInt?      @map("entity_id") @db.UnsignedBigInt
+  metadata   Json?
+  createdAt  DateTime     @default(now()) @map("created_at") @db.DateTime(3)
+
+  @@index([actorType, actorId])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("system_logs")
+}
+```
+
+---
+
+## Seed — کشورها (مرجع)
+
+دادهٔ اولیهٔ `countries` باید از لیست ثابت پروژه seed شود:
+
+| code | name_fa | name_en | phone_prefix |
+|------|---------|---------|--------------|
+| IR | ایران | Iran | 98 |
+| TR | ترکیه | Turkey | 90 |
+| US | آمریکا | United States | 1 |
+| DE | آلمان | Germany | 49 |
+| AE | امارات | UAE | 971 |
+
+---
+
+## قوانین کسب‌وکار در سطح DB / اپلیکیشن
+
+| قانون | لایه |
+|-------|------|
+| `source_currency_id ≠ target_currency_id` | اعتبارسنجی اپلیکیشن (Zod / service) |
+| `rejection_reason` اجباری وقتی `status = rejected` | اعتبارسنجی اپلیکیشن |
+| `tracking_code` ۸ رقم یکتا | تولید در service + unique constraint |
+| فیلتر soft-deleted: `deleted_at IS NULL` | همهٔ queryهای `users` و `admins` |
+| عدم ذخیره رمز/کد کامل در `system_logs.metadata` | اپلیکیشن |
+| حساب بانکی تکراری ذخیره نشود | unique `(user_id, currency_id, account_number)` |
+
+---
+
+## Index Strategy
+
+| جدول | Index | دلیل |
+|------|-------|------|
+| `exchange_requests` | `(status, created_at)` | لیست درخواست‌های جدید / تاریخچه |
+| `users` | `verification_code` | فیلتر فعال/غیرفعال |
+| `users` | `created_at` | فیلتر تاریخ ثبت |
+| `currencies` | `(is_active, sort_order)` | لیست ارز در ربات |
+| `system_logs` | `(created_at)` | فیلتر بازهٔ تاریخ |
+| `system_logs` | `(actor_type, actor_id)` | فیلتر بر اساس actor |
+
+---
+
+## DATABASE_URL نمونه
+
+```env
+DATABASE_URL="mysql://user:password@localhost:3306/taymaz_market"
+```
+
+---
+
+## مراحل بعدی (پیاده‌سازی)
+
+1. کپی schema به `next/prisma/schema.prisma`
+2. `pnpm prisma migrate dev --name init`
+3. seed کشورها + دادهٔ PRD §۱۲
+4. singleton Prisma Client در `lib/prisma.ts`

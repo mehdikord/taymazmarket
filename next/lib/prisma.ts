@@ -1,0 +1,33 @@
+import "dotenv/config";
+import { PrismaMariaDb } from "@prisma/adapter-mariadb";
+import { PrismaClient } from "@/lib/generated/prisma/client";
+
+const globalForPrisma = globalThis as typeof globalThis & {
+  prisma?: PrismaClient;
+};
+
+function createPrismaClient(): PrismaClient {
+  const url = process.env.DATABASE_URL;
+  if (!url?.trim()) {
+    throw new Error("DATABASE_URL is not set");
+  }
+  const adapter = new PrismaMariaDb(url);
+  return new PrismaClient({
+    adapter,
+    log:
+      process.env.NODE_ENV === "development"
+        ? ["error", "warn"]
+        : ["error"],
+  });
+}
+
+export const prisma = globalForPrisma.prisma ?? createPrismaClient();
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
+}
+
+/** Same instance after HMR in dev (for tests / scripts) */
+export function getPrismaClient(): PrismaClient {
+  return prisma;
+}

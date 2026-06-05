@@ -1,0 +1,178 @@
+// Taymaz Market — MySQL schema (see docs/database.schema)
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum ExchangeRequestStatus {
+  pending
+  approved
+  rejected
+
+  @@map("exchange_request_status")
+}
+
+enum LogActorType {
+  admin
+  user
+  system
+
+  @@map("log_actor_type")
+}
+
+// ─── Reference ───────────────────────────────────────────────────────────────
+
+model Country {
+  id          BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  code        String   @unique @db.Char(2)
+  nameFa      String   @map("name_fa") @db.VarChar(100)
+  nameEn      String   @map("name_en") @db.VarChar(100)
+  phonePrefix String   @map("phone_prefix") @db.VarChar(5)
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  currencies Currency[]
+
+  @@map("countries")
+}
+
+// ─── Admins ──────────────────────────────────────────────────────────────────
+
+model Admin {
+  id           BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  name         String    @db.VarChar(100)
+  mobile       String    @unique @db.VarChar(20)
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  reviewedRequests ExchangeRequest[]
+
+  @@index([deletedAt])
+  @@map("admins")
+}
+
+// ─── Users (Telegram customers) ──────────────────────────────────────────────
+
+model User {
+  id                BigInt    @id @default(autoincrement()) @db.UnsignedBigInt
+  name              String?   @db.VarChar(100)
+  telegramChatId    BigInt?   @unique @map("telegram_chat_id") @db.UnsignedBigInt
+  telegramUsername  String?   @map("telegram_username") @db.VarChar(64)
+  mobile            String    @unique @db.VarChar(20)
+  profileImageUrl   String?   @map("profile_image_url") @db.VarChar(500)
+  verificationCode  String?   @map("verification_code") @db.VarChar(64)
+  notes             String?   @db.Text
+  deletedAt         DateTime? @map("deleted_at") @db.DateTime(3)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  bankAccounts     UserBankAccount[]
+  exchangeRequests ExchangeRequest[]
+
+  @@index([verificationCode])
+  @@index([deletedAt])
+  @@index([createdAt])
+  @@map("users")
+}
+
+// ─── Currencies ──────────────────────────────────────────────────────────────
+
+model Currency {
+  id        BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  title     String   @db.VarChar(100)
+  slug      String   @unique @db.VarChar(50)
+  countryId BigInt   @map("country_id") @db.UnsignedBigInt
+  isActive  Boolean  @default(true) @map("is_active")
+  sortOrder Int?     @map("sort_order") @db.UnsignedInt
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  country Country @relation(fields: [countryId], references: [id], onDelete: Restrict)
+
+  bankAccounts           UserBankAccount[]
+  sourceExchangeRequests ExchangeRequest[] @relation("ExchangeRequestSource")
+  targetExchangeRequests ExchangeRequest[] @relation("ExchangeRequestTarget")
+
+  @@index([countryId])
+  @@index([isActive, sortOrder])
+  @@map("currencies")
+}
+
+// ─── User Bank Accounts ──────────────────────────────────────────────────────
+
+model UserBankAccount {
+  id            BigInt   @id @default(autoincrement()) @db.UnsignedBigInt
+  userId        BigInt   @map("user_id") @db.UnsignedBigInt
+  currencyId    BigInt   @map("currency_id") @db.UnsignedBigInt
+  accountNumber String   @map("account_number") @db.VarChar(64)
+  label         String?  @db.VarChar(100)
+  createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  currency Currency @relation(fields: [currencyId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, currencyId, accountNumber])
+  @@index([userId, currencyId])
+  @@map("user_bank_accounts")
+}
+
+// ─── Exchange Requests ───────────────────────────────────────────────────────
+
+model ExchangeRequest {
+  id               BigInt                @id @default(autoincrement()) @db.UnsignedBigInt
+  trackingCode     String                @unique @map("tracking_code") @db.VarChar(8)
+  userId           BigInt                @map("user_id") @db.UnsignedBigInt
+  sourceCurrencyId BigInt                @map("source_currency_id") @db.UnsignedBigInt
+  targetCurrencyId BigInt                @map("target_currency_id") @db.UnsignedBigInt
+  amount           Decimal               @db.Decimal(20, 4)
+  bankAccount      String                @map("bank_account") @db.VarChar(64)
+  invoiceImageUrl  String                @map("invoice_image_url") @db.VarChar(500)
+  status           ExchangeRequestStatus @default(pending)
+  rejectionReason  String?               @map("rejection_reason") @db.Text
+  reviewedById     BigInt?               @map("reviewed_by_id") @db.UnsignedBigInt
+  reviewedAt       DateTime?             @map("reviewed_at") @db.DateTime(3)
+  createdAt        DateTime              @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.DateTime(3)
+
+  user           User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  sourceCurrency Currency @relation("ExchangeRequestSource", fields: [sourceCurrencyId], references: [id], onDelete: Restrict)
+  targetCurrency Currency @relation("ExchangeRequestTarget", fields: [targetCurrencyId], references: [id], onDelete: Restrict)
+  reviewedBy     Admin?   @relation(fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([status])
+  @@index([status, createdAt])
+  @@index([sourceCurrencyId])
+  @@index([targetCurrencyId])
+  @@index([reviewedById])
+  @@index([createdAt])
+  @@map("exchange_requests")
+}
+
+// ─── System Logs ─────────────────────────────────────────────────────────────
+
+model SystemLog {
+  id         BigInt       @id @default(autoincrement()) @db.UnsignedBigInt
+  actorType  LogActorType @map("actor_type")
+  actorId    BigInt?      @map("actor_id") @db.UnsignedBigInt
+  action     String       @db.VarChar(100)
+  entityType String       @map("entity_type") @db.VarChar(50)
+  entityId   BigInt?      @map("entity_id") @db.UnsignedBigInt
+  metadata   Json?
+  createdAt  DateTime     @default(now()) @map("created_at") @db.DateTime(3)
+
+  @@index([actorType, actorId])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("system_logs")
+}
