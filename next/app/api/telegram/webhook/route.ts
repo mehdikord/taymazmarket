@@ -15,10 +15,10 @@ export async function POST(request: Request) {
     return new Response("Webhook secret not configured", { status: 503 });
   }
 
-  const headerSecret = request.headers.get("x-telegram-bot-api-secret-token");
-  if (headerSecret !== secret) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+  // const headerSecret = request.headers.get("x-telegram-bot-api-secret-token");
+  // if (headerSecret !== secret) {
+  //   return new Response("Unauthorized", { status: 401 });
+  // }
 
   const update = await request.json();
   await bot.handleUpdate(update);
